@@ -83,7 +83,20 @@
       min-width: 150px;
       text-align: center;
     }
-    .header-actions { display: flex; gap: 8px; }
+    .header-actions { display: flex; gap: 8px; align-items: center; }
+
+    /* Sync status */
+    .sync-status {
+      font-size: 12px;
+      padding: 4px 10px;
+      border-radius: 20px;
+      font-weight: 500;
+      transition: all 0.2s;
+    }
+    .sync-status:empty { display: none; }
+    .sync-status.saving { background: var(--orange-dim); color: var(--orange); }
+    .sync-status.saved  { background: var(--green-dim);  color: var(--green); }
+    .sync-status.error  { background: var(--red-dim);    color: var(--red); }
 
     /* Buttons */
     .btn {
@@ -392,15 +405,17 @@
       backdrop-filter: blur(4px);
       z-index: 200; display: none;
       align-items: center; justify-content: center;
+      padding: 20px;
     }
     .overlay.open { display: flex; }
     .modal {
       background: var(--bg-secondary);
       border: 1px solid var(--border);
       border-radius: var(--radius-lg);
-      width: 400px; max-width: 90vw; padding: 28px;
+      width: 400px; max-width: 100%; padding: 28px;
     }
-    .modal-title { font-size: 16px; font-weight: 700; margin-bottom: 20px; }
+    .modal-title { font-size: 16px; font-weight: 700; margin-bottom: 6px; }
+    .modal-subtitle { font-size: 13px; color: var(--text-muted); margin-bottom: 20px; line-height: 1.6; }
     .modal-field { margin-bottom: 16px; }
     .modal-field label {
       display: block; font-size: 12px; font-weight: 600;
@@ -409,11 +424,52 @@
     .modal-field input {
       width: 100%; background: var(--bg-tertiary);
       border: 1px solid var(--border); border-radius: var(--radius);
-      padding: 10px 12px; font-size: 15px; color: var(--text-primary);
+      padding: 10px 12px; font-size: 14px; color: var(--text-primary);
       outline: none; font-family: inherit;
     }
-    .modal-field input:focus { border-color: var(--green); }
+    .modal-field input:focus { border-color: var(--blue); }
+    .modal-field input::placeholder { color: var(--text-dim); font-size: 12px; }
     .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 24px; }
+
+    .setup-steps {
+      background: var(--bg-tertiary);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 14px 16px;
+      margin-bottom: 20px;
+      font-size: 12px;
+      color: var(--text-muted);
+      line-height: 1.8;
+    }
+    .setup-steps ol { padding-left: 16px; }
+    .setup-steps a { color: var(--blue); text-decoration: none; }
+    .setup-steps a:hover { text-decoration: underline; }
+    .setup-steps code {
+      background: var(--bg-primary);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 1px 6px;
+      font-size: 11px;
+      color: var(--text-primary);
+    }
+
+    /* Loading screen */
+    .loading-screen {
+      position: fixed; inset: 0;
+      background: var(--bg-primary);
+      display: flex; align-items: center; justify-content: center;
+      z-index: 300; flex-direction: column; gap: 14px;
+    }
+    .loading-screen.hidden { display: none; }
+    .spinner {
+      width: 32px; height: 32px;
+      border: 3px solid var(--border);
+      border-top-color: var(--blue);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .loading-text { font-size: 14px; color: var(--text-muted); }
 
     /* Responsive */
     @media (max-width: 960px) {
@@ -429,6 +485,12 @@
 </head>
 <body>
 
+<!-- Loading screen -->
+<div class="loading-screen" id="loadingScreen">
+  <div class="spinner"></div>
+  <div class="loading-text" id="loadingText">Loading your data...</div>
+</div>
+
 <header class="header">
   <div class="header-brand">&#x1F4B6; Finance Dashboard</div>
 
@@ -439,11 +501,8 @@
   </div>
 
   <div class="header-actions">
-    <button class="btn btn-ghost btn-sm" onclick="exportJSON()">&#8593; Export JSON</button>
-    <label class="btn btn-ghost btn-sm" style="cursor:pointer">
-      &#8595; Import JSON
-      <input type="file" accept=".json" onchange="importJSON(event)" style="display:none">
-    </label>
+    <span class="sync-status" id="syncStatus"></span>
+    <button class="btn btn-ghost btn-sm" onclick="openSetupModal()" title="Sync settings">&#9881; Sync</button>
   </div>
 </header>
 
@@ -669,36 +728,146 @@
   </div>
 </div>
 
-<script>
-// ── Storage ──────────────────────────────────────────────────────────────────
-const KEY = 'finance_v1';
-function load() {
-  try { return JSON.parse(localStorage.getItem(KEY)) || fresh(); }
-  catch { return fresh(); }
-}
-function fresh() { return { salary: 0, months: {} }; }
-function persist() { localStorage.setItem(KEY, JSON.stringify(db)); }
+<!-- Setup / Sync modal -->
+<div class="overlay" id="setupOverlay">
+  <div class="modal" style="width:460px">
+    <div class="modal-title">&#9881; GitHub Sync Setup</div>
+    <div class="modal-subtitle">
+      Your data will be saved to a private GitHub Gist and synced across all your devices automatically.
+    </div>
 
-// ── State ────────────────────────────────────────────────────────────────────
-let db = load();
-let cy, cm; // current year, month (0-indexed)
-(function () {
-  const n = new Date();
+    <div class="setup-steps">
+      <ol>
+        <li>Go to <a href="https://github.com/settings/tokens/new?scopes=gist&description=Finance+Dashboard" target="_blank">GitHub → Settings → Tokens</a></li>
+        <li>Select scope: <code>gist</code> &nbsp;→ Click <strong>Generate token</strong></li>
+        <li>Paste the token below</li>
+      </ol>
+    </div>
+
+    <div class="modal-field">
+      <label>GitHub Personal Access Token</label>
+      <input type="password" id="setupToken" placeholder="ghp_xxxxxxxxxxxxxxxxxxxx">
+    </div>
+    <div class="modal-field">
+      <label>Gist ID <span style="font-weight:400;color:var(--text-dim)">(leave blank to create a new one)</span></label>
+      <input type="text" id="setupGistId" placeholder="e.g. a1b2c3d4e5f6... (optional)">
+    </div>
+    <div id="setupError" style="font-size:12px;color:var(--red);margin-top:-8px;margin-bottom:12px;display:none"></div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="closeSetupModal()" id="setupCancelBtn">Cancel</button>
+      <button class="btn btn-green" onclick="saveSetup()">Connect &amp; Sync</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── Gist Storage ──────────────────────────────────────────────────────────────
+var GIST_TOKEN_KEY  = 'finance_gist_token';
+var GIST_ID_KEY     = 'finance_gist_id';
+var CACHE_KEY       = 'finance_v1';
+var GIST_FILENAME   = 'finance_data.json';
+
+function getToken()  { return localStorage.getItem(GIST_TOKEN_KEY) || ''; }
+function getGistId() { return localStorage.getItem(GIST_ID_KEY) || ''; }
+function fresh()     { return { salary: 0, months: {} }; }
+
+function loadCache() {
+  try { return JSON.parse(localStorage.getItem(CACHE_KEY)) || fresh(); }
+  catch(e) { return fresh(); }
+}
+function saveCache(data) {
+  localStorage.setItem(CACHE_KEY, JSON.stringify(data));
+}
+
+function setStatus(msg, type) {
+  var el = document.getElementById('syncStatus');
+  el.textContent = msg;
+  el.className = 'sync-status ' + (type || '');
+}
+
+async function fetchFromGist() {
+  var token  = getToken();
+  var gistId = getGistId();
+  if (!token || !gistId) return null;
+
+  var resp = await fetch('https://api.github.com/gists/' + gistId, {
+    headers: { 'Authorization': 'token ' + token, 'Accept': 'application/vnd.github.v3+json' }
+  });
+  if (!resp.ok) throw new Error('HTTP ' + resp.status);
+  var data    = await resp.json();
+  var content = data.files && data.files[GIST_FILENAME] && data.files[GIST_FILENAME].content;
+  if (!content) throw new Error('File not found in Gist');
+  return JSON.parse(content);
+}
+
+var saveTimer = null;
+
+function persist() {
+  saveCache(db);
+
+  var token  = getToken();
+  var gistId = getGistId();
+  if (!token) return;
+
+  setStatus('Saving...', 'saving');
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(async function() {
+    try {
+      var body = { files: {} };
+      body.files[GIST_FILENAME] = { content: JSON.stringify(db, null, 2) };
+
+      var id = getGistId();
+      if (!id) {
+        body.description = 'Finance Dashboard Data';
+        body.public = false;
+        var cr = await fetch('https://api.github.com/gists', {
+          method: 'POST',
+          headers: {
+            'Authorization': 'token ' + token,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify(body)
+        });
+        var created = await cr.json();
+        localStorage.setItem(GIST_ID_KEY, created.id);
+      } else {
+        await fetch('https://api.github.com/gists/' + id, {
+          method: 'PATCH',
+          headers: {
+            'Authorization': 'token ' + token,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify(body)
+        });
+      }
+      setStatus('Synced \u2713', 'saved');
+      setTimeout(function() { setStatus('', ''); }, 2500);
+    } catch(e) {
+      setStatus('Sync failed', 'error');
+    }
+  }, 800);
+}
+
+// ── State ─────────────────────────────────────────────────────────────────────
+var db = fresh();
+var cy, cm;
+(function() {
+  var n = new Date();
   cy = n.getFullYear();
   cm = n.getMonth();
 })();
 
 function mkey(y, m) { return y + '-' + String(m + 1).padStart(2, '0'); }
 function mdata(y, m) {
-  const k = mkey(y, m);
+  var k = mkey(y, m);
   if (!db.months[k]) db.months[k] = { expenses: [], investments: [] };
   return db.months[k];
 }
 function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2); }
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
-const MONTHS = ['January','February','March','April','May','June',
-                'July','August','September','October','November','December'];
+// ── Helpers ───────────────────────────────────────────────────────────────────
+var MONTHS = ['January','February','March','April','May','June',
+              'July','August','September','October','November','December'];
 
 function eur(n) {
   return '\u20AC' + Number(n).toLocaleString('de-DE', {
@@ -707,7 +876,7 @@ function eur(n) {
 }
 function fdate(s) {
   if (!s) return '';
-  const p = s.split('-');
+  var p = s.split('-');
   return p[2] + '.' + p[1] + '.' + p[0];
 }
 function esc(s) {
@@ -716,24 +885,24 @@ function esc(s) {
     .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
-const EXP_ICONS = {
+var EXP_ICONS = {
   Housing:'🏠', Groceries:'🛒', Transport:'🚗', Utilities:'💡',
   Insurance:'🛡️', Healthcare:'🏥', Dining:'🍽️', Entertainment:'🎬',
   Shopping:'🛍️', Subscriptions:'📱', Other:'📦'
 };
-const INV_ICONS = {
+var INV_ICONS = {
   ETF:'📈', Stocks:'📊', Crypto:'₿', Bonds:'📋',
   Savings:'🏦', Pension:'🎯', 'Real Estate':'🏘️', Other:'📦'
 };
 
-// ── Render ───────────────────────────────────────────────────────────────────
+// ── Render ────────────────────────────────────────────────────────────────────
 function render() {
-  const md   = mdata(cy, cm);
-  const sal  = db.salary;
-  const expT = md.expenses.reduce(function(s,e){ return s + e.amount; }, 0);
-  const invT = md.investments.reduce(function(s,e){ return s + e.amount; }, 0);
-  const rem  = sal - expT - invT;
-  const invRate = sal > 0 ? Math.round(invT / sal * 100) : 0;
+  var md   = mdata(cy, cm);
+  var sal  = db.salary;
+  var expT = md.expenses.reduce(function(s,e){ return s + e.amount; }, 0);
+  var invT = md.investments.reduce(function(s,e){ return s + e.amount; }, 0);
+  var rem  = sal - expT - invT;
+  var invRate = sal > 0 ? Math.round(invT / sal * 100) : 0;
 
   document.getElementById('monthDisplay').textContent = MONTHS[cm] + ' ' + cy;
 
@@ -752,7 +921,6 @@ function render() {
   remEl.className = 'stat-value' + (rem < 0 ? ' neg' : rem > 0 ? ' pos' : '');
   document.getElementById('remSub').textContent = invRate + '% investment rate';
 
-  // Progress bar
   var expPct  = sal > 0 ? Math.min(expT / sal * 100, 100) : 0;
   var invPct  = sal > 0 ? Math.min(invT / sal * 100, Math.max(0, 100 - expPct)) : 0;
   var freePct = Math.max(0, 100 - expPct - invPct);
@@ -777,19 +945,18 @@ function renderList(type, items) {
   var isExp = type === 'exp';
 
   if (!items.length) {
-    // Check if previous month has entries for this type
     var pm = cm - 1, py = cy;
     if (pm < 0) { pm = 11; py--; }
-    var prevMd     = db.months[mkey(py, pm)];
-    var prevItems  = prevMd ? (isExp ? prevMd.expenses : prevMd.investments) : [];
-    var prevLabel  = MONTHS[pm] + ' ' + py;
+    var prevMd    = db.months[mkey(py, pm)];
+    var prevItems = prevMd ? (isExp ? prevMd.expenses : prevMd.investments) : [];
+    var prevLabel = MONTHS[pm] + ' ' + py;
 
     var copyHtml = '';
     if (prevItems && prevItems.length) {
       copyHtml =
         '<div class="copy-banner">' +
-          '<div class="copy-banner-info">No ' + (isExp ? 'expenses' : 'investments') + ' this month yet. ' +
-            '<strong>' + prevItems.length + ' item' + (prevItems.length === 1 ? '' : 's') + '</strong> available from ' + prevLabel + '.' +
+          '<div class="copy-banner-info">No ' + (isExp ? 'expenses' : 'investments') + ' yet. ' +
+            '<strong>' + prevItems.length + ' item' + (prevItems.length === 1 ? '' : 's') + '</strong> from ' + prevLabel + '.' +
           '</div>' +
           '<button class="copy-btn" onclick="copyFromPrev(\'' + type + '\')">Copy from ' + prevLabel + '</button>' +
         '</div>';
@@ -832,14 +999,11 @@ function renderHistory() {
   var tbody  = document.getElementById('historyBody');
   var curKey = mkey(cy, cm);
 
-  // Only show months that have at least one entry, plus the current month
   var keySet = {};
-  keySet[mkey(cy, cm)] = true; // always include current month
+  keySet[mkey(cy, cm)] = true;
   Object.keys(db.months).forEach(function(k) {
     var md = db.months[k];
-    if (md && (md.expenses.length > 0 || md.investments.length > 0)) {
-      keySet[k] = true;
-    }
+    if (md && (md.expenses.length > 0 || md.investments.length > 0)) keySet[k] = true;
   });
 
   var sorted = Object.keys(keySet).sort().reverse();
@@ -876,7 +1040,7 @@ function renderHistory() {
   }).join('');
 }
 
-// ── Actions ──────────────────────────────────────────────────────────────────
+// ── Actions ───────────────────────────────────────────────────────────────────
 function navMonth(dir) {
   cm += dir;
   if (cm > 11) { cm = 0;  cy++; }
@@ -916,7 +1080,7 @@ function addEntry(type) {
   var catType= document.getElementById(isExp ? 'eCat' : 'iType').value;
   var date   = document.getElementById(isExp ? 'eDate' : 'iDate').value;
 
-  if (!desc)                     { alert('Please enter a description.'); return; }
+  if (!desc)                       { alert('Please enter a description.'); return; }
   if (isNaN(amount) || amount < 0) { alert('Please enter a valid amount (0 or more).'); return; }
 
   var entry = { id: uid(), description: desc, amount: amount, date: date || null };
@@ -927,7 +1091,6 @@ function addEntry(type) {
   else       md.investments.push(entry);
   persist();
 
-  // Clear fields and stay open so user can add more items quickly
   document.getElementById(isExp ? 'eDesc' : 'iDesc').value = '';
   document.getElementById(isExp ? 'eAmt'  : 'iAmt').value  = '';
   document.getElementById(isExp ? 'eDesc' : 'iDesc').focus();
@@ -942,11 +1105,11 @@ function delEntry(type, id) {
   render();
 }
 
-// ── Edit entry ───────────────────────────────────────────────────────────────
+// ── Edit entry ────────────────────────────────────────────────────────────────
 var editType, editId;
 
-var EXP_CATS = ['Housing','Groceries','Transport','Utilities','Insurance',
-                'Healthcare','Dining','Entertainment','Shopping','Subscriptions','Other'];
+var EXP_CATS  = ['Housing','Groceries','Transport','Utilities','Insurance',
+                 'Healthcare','Dining','Entertainment','Shopping','Subscriptions','Other'];
 var INV_TYPES = ['ETF','Stocks','Crypto','Bonds','Savings','Pension','Real Estate','Other'];
 
 function openEdit(type, id) {
@@ -966,13 +1129,12 @@ function openEdit(type, id) {
   document.getElementById('editDate').value = item.date || '';
   document.getElementById('editCatLabel').textContent = isExp ? 'Category' : 'Type';
 
-  var opts  = isExp ? EXP_CATS : INV_TYPES;
-  var cur   = isExp ? item.category : item.type;
-  var sel   = document.getElementById('editCat');
+  var opts = isExp ? EXP_CATS : INV_TYPES;
+  var cur  = isExp ? item.category : item.type;
+  var sel  = document.getElementById('editCat');
   sel.innerHTML = opts.map(function(o) {
     return '<option value="' + o + '"' + (o === cur ? ' selected' : '') + '>' + o + '</option>';
   }).join('');
-  sel.style.background = 'var(--bg-tertiary)';
 
   document.getElementById('editOverlay').classList.add('open');
   setTimeout(function() { document.getElementById('editDesc').select(); }, 50);
@@ -1016,7 +1178,7 @@ document.getElementById('editDesc').addEventListener('keydown', function(e) {
   if (e.key === 'Enter') document.getElementById('editAmt').focus();
 });
 
-// ── Copy from previous month ─────────────────────────────────────────────────
+// ── Copy from previous month ──────────────────────────────────────────────────
 function copyFromPrev(type) {
   var pm = cm - 1, py = cy;
   if (pm < 0) { pm = 11; py--; }
@@ -1032,7 +1194,6 @@ function copyFromPrev(type) {
     var copy = {};
     Object.keys(item).forEach(function(k) { copy[k] = item[k]; });
     copy.id = uid();
-    // Update date: keep same day, set to current month/year
     if (copy.date) {
       var day = copy.date.split('-')[2];
       copy.date = cy + '-' + String(cm + 1).padStart(2, '0') + '-' + day;
@@ -1044,7 +1205,7 @@ function copyFromPrev(type) {
   render();
 }
 
-// ── Salary modal ─────────────────────────────────────────────────────────────
+// ── Salary modal ──────────────────────────────────────────────────────────────
 function openSalaryModal() {
   document.getElementById('salaryInput').value = db.salary || '';
   document.getElementById('salaryOverlay').classList.add('open');
@@ -1068,39 +1229,80 @@ document.getElementById('salaryInput').addEventListener('keydown', function(e) {
   if (e.key === 'Enter') saveSalary();
 });
 
-// ── Export / Import ───────────────────────────────────────────────────────────
-function exportJSON() {
-  var blob = new Blob([JSON.stringify(db, null, 2)], { type: 'application/json' });
-  var url  = URL.createObjectURL(blob);
-  var a    = document.createElement('a');
-  a.href = url;
-  a.download = 'finance_' + new Date().toISOString().slice(0, 10) + '.json';
-  a.click();
-  URL.revokeObjectURL(url);
+// ── Setup / Sync modal ────────────────────────────────────────────────────────
+function openSetupModal() {
+  var errEl = document.getElementById('setupError');
+  errEl.style.display = 'none';
+  errEl.textContent = '';
+  document.getElementById('setupToken').value  = getToken();
+  document.getElementById('setupGistId').value = getGistId();
+
+  var hasToken = !!getToken();
+  document.getElementById('setupCancelBtn').style.display = hasToken ? '' : 'none';
+  document.getElementById('setupOverlay').classList.add('open');
+  setTimeout(function() {
+    var t = document.getElementById('setupToken');
+    if (!t.value) t.focus(); else document.getElementById('setupGistId').focus();
+  }, 50);
 }
-function importJSON(e) {
-  var file = e.target.files[0];
-  if (!file) return;
-  var reader = new FileReader();
-  reader.onload = function(ev) {
-    try {
-      var imported = JSON.parse(ev.target.result);
-      if (imported.months && typeof imported.salary === 'number') {
-        db = imported;
-        persist();
-        render();
-        alert('Data imported successfully!');
-      } else {
-        alert('Invalid file format. Expected a Finance Dashboard export.');
-      }
-    } catch(err) { alert('Failed to read file.'); }
-  };
-  reader.readAsText(file);
-  e.target.value = '';
+function closeSetupModal() {
+  document.getElementById('setupOverlay').classList.remove('open');
 }
 
-// ── Init ─────────────────────────────────────────────────────────────────────
-// Strip empty months left over from navigation
+async function saveSetup() {
+  var token  = document.getElementById('setupToken').value.trim();
+  var gistId = document.getElementById('setupGistId').value.trim();
+  var errEl  = document.getElementById('setupError');
+
+  errEl.style.display = 'none';
+
+  if (!token) {
+    errEl.textContent = 'Please enter a GitHub token.';
+    errEl.style.display = 'block';
+    return;
+  }
+
+  // Verify token by hitting /user
+  try {
+    var chk = await fetch('https://api.github.com/user', {
+      headers: { 'Authorization': 'token ' + token }
+    });
+    if (!chk.ok) throw new Error('invalid');
+  } catch(e) {
+    errEl.textContent = 'Token is invalid or has no gist scope. Please check and try again.';
+    errEl.style.display = 'block';
+    return;
+  }
+
+  localStorage.setItem(GIST_TOKEN_KEY, token);
+  if (gistId) localStorage.setItem(GIST_ID_KEY, gistId);
+  else        localStorage.removeItem(GIST_ID_KEY);
+
+  closeSetupModal();
+
+  // If a gist ID was provided, load from it
+  if (gistId) {
+    document.getElementById('loadingText').textContent = 'Syncing data...';
+    document.getElementById('loadingScreen').classList.remove('hidden');
+    try {
+      var remote = await fetchFromGist();
+      if (remote) {
+        db = remote;
+        saveCache(db);
+      }
+    } catch(e) {
+      setStatus('Could not load Gist — using local data', 'error');
+    }
+    document.getElementById('loadingScreen').classList.add('hidden');
+  } else {
+    // Create a new gist immediately with current data
+    persist();
+  }
+
+  render();
+}
+
+// ── Init ──────────────────────────────────────────────────────────────────────
 (function pruneEmpty() {
   Object.keys(db.months).forEach(function(k) {
     var md = db.months[k];
@@ -1108,10 +1310,49 @@ function importJSON(e) {
       delete db.months[k];
     }
   });
-  persist();
 })();
 
-render();
+async function init() {
+  var token  = getToken();
+  var gistId = getGistId();
+
+  if (!token) {
+    // No token yet — load from local cache and show setup modal
+    db = loadCache();
+    document.getElementById('loadingScreen').classList.add('hidden');
+    render();
+    openSetupModal();
+    return;
+  }
+
+  // Try to load from Gist
+  try {
+    var remote = await fetchFromGist();
+    if (remote) {
+      db = remote;
+      saveCache(db);
+    } else {
+      db = loadCache();
+    }
+  } catch(e) {
+    db = loadCache();
+    setStatus('Offline \u2014 using local cache', 'error');
+    setTimeout(function() { setStatus('', ''); }, 4000);
+  }
+
+  // Prune empty months after loading
+  Object.keys(db.months).forEach(function(k) {
+    var md = db.months[k];
+    if (!md || (md.expenses.length === 0 && md.investments.length === 0)) {
+      delete db.months[k];
+    }
+  });
+
+  document.getElementById('loadingScreen').classList.add('hidden');
+  render();
+}
+
+init();
 </script>
 </body>
 </html>
